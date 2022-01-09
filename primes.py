@@ -14,7 +14,7 @@ from typing import Dict, Tuple, Union, List
 logging.basicConfig(level=logging.DEBUG)
 
 class Primes:
-
+    Trial = Trial
     Fermat = Fermat
     MillerRabin = MillerRabin
     Lucas = Lucas

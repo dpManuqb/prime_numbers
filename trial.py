@@ -1,4 +1,4 @@
-import utils, logging, multiprocessing, math
+import utils, logging, multiprocessing, math, functools
 from typing import List, Dict
 
 logging.basicConfig(level=logging.DEBUG)
@@ -32,10 +32,11 @@ class Trial:
         B = min([utils.i2root(n), B])
 
         length = math.ceil((1 + utils.primeList.index(B))/processes)
+        start, stop = [i*length for i in range(0, processes)], [i*length-1 for i in range(1, processes+1)]
 
         event = multiprocessing.Event()
         with multiprocessing.Pool(processes, setup, (event,)) as pool:
-            results = pool.starmap(test_with_event, zip(processes*[n], ))
+            results = pool.starmap(test_with_event, zip(processes*[n], start, stop))
 
         return all(results)
 
@@ -61,7 +62,20 @@ class Trial:
 
     @staticmethod
     def multiprocess_factorization(n:int, B:int, processes:int=2) -> Dict[int,List[int]]:
-        pass
+        
+        if(B is None):
+            B = utils.primeList[-1]
+        B = min([utils.i2root(n), B])
+
+        length = math.ceil((1 + utils.primeList.index(B))/processes)
+        start, stop = [i*length for i in range(0, processes)], [i*length-1 for i in range(1, processes+1)]
+
+        event = multiprocessing.Event()
+        with multiprocessing.Pool(processes, setup, (event,)) as pool:
+            results = pool.starmap(factorization_with_event, zip(processes*[n], start, stop))
+
+        f = functools.reduce(utils.merge_factors, results)
+        return f, f//utils.n_from_factorization(f)
 
 ############################################################################
 ################ Multiprocessing versions need to be global ################
@@ -81,3 +95,15 @@ def test_with_event(n:int, x_min:int, x_max:int):
             event.set()
             return False
     return True
+
+def factorization_with_event(n:int, x_min:int, x_max:int):
+    factorization = {}
+    for i in range(x_min, x_max+1):
+        p = utils.primeList[i]
+        exp = 0
+        while(n%p == 0):
+            n //= p
+            exp += 1
+        if(exp != 0):
+            factorization[p] = exp
+    return factorization
