@@ -2,9 +2,9 @@ import time
 
 def timeit(func):
     def wrapper(*args, **kwargs):
-        start = time.time_ns()
+        start = time.time()
         result = func(*args, **kwargs)
-        end = time.time_ns()
-        execution = end-start
-        return execution, result
+        end = time.time()
+        execution_time = (end-start)
+        return "{:.2f}".format(execution_time), result
     return wrapper

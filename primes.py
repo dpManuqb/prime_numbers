@@ -1,93 +1,84 @@
-import tqdm
-
-import utils, logging
-from trial import Trial
-from fermat import Fermat
-from millerrabin import MillerRabin
-from lucas import Lucas
+import utils, gmpy2, random
+from typing import Callable
 from bpsw import BPSW
-from aks import AKS
-from pollard import Pollard
 
-from typing import Dict, Tuple, Union, List
+def generate_composite(b:int) -> int:
+    return random.randrange(2**((b>>1)-1), 2**(b>>1))*random.randrange(2**((b>>1)-1), 2**(b>>1))
 
-logging.basicConfig(level=logging.DEBUG)
+def generate_prime(b:int, test:Callable=BPSW.strong_test, **kwargs) -> int:
+    while(True):
+        n = random.randrange(2**(b-2), 2**(b-1))*2+1
+        if(test(n, **kwargs)):
+            return n
 
-class Primes:
-    Trial = Trial
-    Fermat = Fermat
-    MillerRabin = MillerRabin
-    Lucas = Lucas
-    BPSW = BPSW
-    AKS = AKS
-    Pollard = Pollard
+def generate_semiprime(b:int, test:Callable=BPSW.strong_test, **kwargs) -> int:
+    return generate_prime(b>>1, test, **kwargs)*generate_prime(b>>1, test, **kwargs)
 
-    @staticmethod
-    def fermat_with_trial_factorization(n:int, B:int=None, sieve:Union[None,List[int]]=None) -> Tuple[Dict[int,int],Tuple[int,int]]:
-        if(B is None):
-            B = utils.primeList[-1]
-        
-        if(BPSW.test(n)):
-            return {n:1}, (1,1)
+def generate_strong_prime(b:int, test:Callable=BPSW.strong_test, **kwargs) -> int:
+    s, t = generate_prime((b>>1), test, **kwargs), generate_prime((b>>1), test, **kwargs)
+    i = random.randrange(0, 100)
+    r = 2*i*t+1
+    while(not test(r, **kwargs)):
+        i += 1
+        r = 2*i*t+1
+    p_0 = 2*pow(s, r-2, r)*s - 1
+    j = random.randrange(0, 100)
+    p = p_0 + 2*j*r*s
+    while(not test(p, **kwargs)):
+        j += 1
+        p = p_0 + 2*j*r*s
+    return p
 
-        f, r = Trial.factorization(n, B)
+def generate_strong_semiprime(b:int, test:Callable=BPSW.strong_test, **kwargs) -> int:
+    return generate_strong_prime(b>>1, test, **kwargs)*generate_strong_prime(b>>1, test, **kwargs)
 
-        if(r != 1 and BPSW.test(r)):
-            f[r], r = 1, (1, 1)
-        elif(r != 1):
-            if(sieve is None):
-                f1, f2 = Fermat.factorization(n, start=(n+B**2)//(2*B))
-            else:
-                f1, f2 = Fermat.sieve_factorization(n, modulus=sieve, start=(n+B**2)//(2*B))
-            if(f1 != 1 and BPSW.test(f1)):
-                if(f1 == f2):
-                    f[f1], f1, f2 = 2, 1, 1
-                else:
-                    f[f1], f1 = 1, 1
-            elif(f2 != 1 and f1 != f2 and BPSW.test(f2)):
-                f[f2], f2 = 1, 1
-            r = (f1, f2)
-        else:
-            r = (1, 1)
+def generate_coprime(n:int, b:int) -> int:
+    while(True):
+        guess = random.randrange(2**(b-1), 2**b)
+        if(gmpy2.gcd(n, guess) == 1):
+            return guess
 
-        return f, r
+def next_prime(n:int, test:Callable=BPSW.strong_test, **kwargs):
+  if(not n & 1):
+    n -= 1
+  n += 2
+  while(not test(n, **kwargs)):
+    n += 2
+  return n
 
+def range_generator(start:int, stop:int):
+    for i in range(start, stop+1):
+        yield i
 
+def prime_generator(start:int, stop:int, test:Callable=BPSW.strong_test, **kwargs):
+    if(start <= utils.prime_list[-1]):
+        i, p = 0, 2
+        while(p < start):
+            i += 1
+            p = utils.prime_list[i]
+        while(p < stop and i < len(utils.prime_list)):
+            p = utils.prime_list[i]
+            yield p
+            i += 1
+    if(utils.prime_list[-1] < stop):
+        p = next_prime(max(start, utils.prime_list[-1]), test, **kwargs)
+        while(p <= stop):
+            yield p
+            p = next_prime(p, test, **kwargs)
 
-def Square_factorization(n, limit=10**7):
-    root = utils.i2root(n)
-    residues = [r*r for r in range(min([root+1, limit]))]
-    with tqdm.tqdm(total=n//2-root) as pbar:
-        for a in range(root+1,min([limit, n//2])):
-            r = (a*a)%n
-            if(r in residues):
-                b = residues.index(r)
-                return utils.gcd(abs(a+b), n), utils.gcd(abs(a-b), n)
-            else:
-                residues.append(r)
-            pbar.update(1)
-        for a in range(limit+1,n//2):
-            r = (a*a)%n
-            if(r in residues):
-                b = residues.index(r)
-                return utils.gcd(abs(a+b), n), utils.gcd(abs(a-b), n)
-            pbar.update(1)
-
-""" def Dixon_factorization(n, B=50):
-    residues = []
-    root = i2root(n)
-    total = 0
-    needed = pi(B)
-    for a in range(root+1, n//2):
-        f,r = Trial_Division_factorization((a*a)%n, B, verb=False)
-        if(r != 1 and BPSWTest(r)):
-            f[r], r = 1, 1
-        if(r == 1 and isBSmooth(f,B)):
-            if(all([k%2 == 0 for k in f.values()])):
-                b = {k:v//2 for k,v in f.items()}
-                return gcd(a+b,n), gcd(abs(a-b),n)
-            residues.append((a,f))
-            total += 1
-        if(total == needed):
-            break
-    return residues """
+def prime_power_generator(start:int, stop:int, test:Callable=BPSW.strong_test, **kwargs):
+    log_B = utils.log(stop)
+    if(start <= utils.prime_list[-1]):
+        i, p = 0, 2
+        while(p < start):
+            i += 1
+            p = utils.prime_list[i]
+        while(p < stop and i < len(utils.prime_list)):
+            p = utils.prime_list[i]
+            yield pow(p, int(gmpy2.floor(log_B/utils.log(p))))
+            i += 1
+    if(utils.prime_list[-1] < stop):
+        p = next_prime(max(start, utils.prime_list[-1]), test, **kwargs)
+        while(p <= stop):
+            yield pow(p, int(gmpy2.floor(log_B/utils.log(p))))
+            p = next_prime(p, test, **kwargs)
