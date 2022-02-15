@@ -96,6 +96,33 @@ def pi(n:int) -> int:
 def phi(f:Dict[int,int]) -> int:
     return functools.reduce(operator.mul, [(p-1)*pow(p,k-1) for p,k in f.items()])
 
+def product(X):
+  if len(X) == 0: return 1
+  while len(X) > 1:
+    X = [X[i*2]*X[2*i+1] if(2*i+1 < len(X)) else X[i*2] for i in range((len(X)+1)//2)]
+  return X[0]
+
+def productTree(X):
+  result = [X]
+  while len(X) > 1:
+    X = [X[i*2]*X[2*i+1] if(2*i+1 < len(X)) else X[i*2] for i in range((len(X)+1)//2)]
+    result.append(X)
+  return result
+
+def remaindersTree(T,n):
+  result = [n]
+  for t in reversed(T):
+    result = [result[i//2]%t[i] for i in range(len(t))]
+  return result
+
+def remainders(X, n):
+  return remaindersTree(productTree(X), n)
+
+def are_smooth(X, n):
+  rems = remainders(X, n)
+  e = pow(2, int(gmpy2.ceil(gmpy2.log2(gmpy2.log2(max(X))))))
+  return [x//gmpy2.gcd(pow(r, e, x), x) for x,r in zip(X,rems)]
+
 def init(l):
     global event
     event = l

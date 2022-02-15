@@ -11,8 +11,8 @@ def generate_prime(b:int, test:Callable=BPSW.strong_test, **kwargs) -> int:
         if(test(n, **kwargs)):
             return n
 
-def generate_semiprime(b:int, test:Callable=BPSW.strong_test, **kwargs) -> int:
-    return generate_prime(b>>1, test, **kwargs)*generate_prime(b>>1, test, **kwargs)
+def generate_semiprime(b:int, diff:int=0, test:Callable=BPSW.strong_test, **kwargs) -> int:
+    return generate_prime((b+diff)//2, test, **kwargs)*generate_prime((b-diff)//2, test, **kwargs)
 
 def generate_strong_prime(b:int, test:Callable=BPSW.strong_test, **kwargs) -> int:
     s, t = generate_prime((b>>1), test, **kwargs), generate_prime((b>>1), test, **kwargs)

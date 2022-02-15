@@ -1,12 +1,13 @@
-import primes, utils
-from squares import Squares
-from benchmark import timeit
-
-@timeit
-def factorize(*args):
-    return Squares.dixon_factorization(*args)
+import primes, utils, gmpy2
+from squares import sqrt_convergent_generator
 
 if(__name__ == "__main__"):
-    n = primes.generate_semiprime(100)
+    total = 40
+    n = 13290059
     print(n)
-    print(factorize(n, utils.prime_list[:2000]))
+    check = [10, 23, 26, 31, 40]
+    for i,values in enumerate(sqrt_convergent_generator(n)):
+        if(i in check):
+            print(values[0], values[-1])
+        if(i >= total):
+            break

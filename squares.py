@@ -1,7 +1,7 @@
-import utils, multiprocessing, gmpy2, numba, functools, operator, logging
+import utils, multiprocessing, gmpy2, numba, functools, operator, itertools, logging
 import numpy as np
-from tqdm import tqdm
-from typing import List, Dict
+import tqdm
+from typing import List
 
 logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
@@ -12,6 +12,43 @@ logger.setLevel(logging.INFO)
 ############################################################################
 
 class Squares:
+
+    @staticmethod
+    def fermat_factorization(n:int, processes:int=1, sieve:bool=False, F:List[int]=[7,9,11,13,16]):
+        """Fermat factorization assuming n is odd and not a perfect square"""
+        a_min, a_max = utils.introot(n)[0]+1, (n+9)//6
+
+        if(sieve):
+            congruences, M = _fermat_build_congruences(n, F, a_min, a_max)
+            congruences = list(sorted(congruences, key=lambda c: c[0]))
+        if(processes == 1):
+            if(not sieve):
+                generator = range(a_min, a_max)
+            else:
+                generator = _fermat_congruences_generator(congruences, M)
+
+            return _fermat_factorization(n, generator)
+
+        else:
+            if(not sieve):
+                block_size = int(gmpy2.ceil((a_max-a_min+1)/processes))
+                a_min, a_max, _a_max = list(range(a_min, processes*block_size, block_size)), list(range(a_min+block_size-1, (processes+1)*block_size, block_size)), a_max
+                a_max[-1] = _a_max
+                generators = [range(start,stop+1) for start,stop in zip(a_min,a_max)]
+                M = None
+            else:
+                block_size = int(gmpy2.ceil(len(congruences)/processes))
+                generators = [congruences[i*block_size:(i+1)*block_size] for i in range(processes)]
+
+            with multiprocessing.Pool(processes, initializer=utils.init, initargs=(multiprocessing.Event(),)) as pool:
+                results = pool.starmap(_multiprocess_fermat_factorization, zip(processes*[n], generators, processes*[M]))
+
+            results = list(filter(lambda x: x[0] not in [1,n], results))
+
+            if(results == []):
+                return n, 1
+            else:
+                return results[0]
 
     @staticmethod
     def kraitchik_factorization(n:int, processes:int=1):
@@ -36,42 +73,32 @@ class Squares:
                 return results[0]
 
     @staticmethod
-    def dixon_factorization(n:int, F:List[int]):
+    def dixon_factorization(n:int, F:List[int], block_size:int=10000, partials:bool=False):
         """Dixon factorization method with list of primes F + -1"""
 
         logger.info("Searching smooth squares by brute force...")
-        x, start, stop = gmpy2.isqrt(n), 1, 2*(n-2)
-        G = functools.reduce(operator.mul, F)
-        congruences, total, j = [], int((len(F)+1)*1.001), 0
-        with tqdm(total=total) as pbar:
-            for i in range(start, stop+1):
-                step = pow(-1,i+1)*i
-                x = x + step
-                y = pow(x, 2, n)
-                if(step < 0):
-                    y -= n
-                if(utils.is_smooth(abs(y), G)):
-                    j += 1
-                    congruences.append({"x": x, "y": y,})
-                    pbar.update()
-                if(j == total):
-                    break
+        if(block_size == 1):
+            congruences = _dixon_search_smooths(n, F)
+        else:
+            congruences = _dixon_search_smooth_blocks(n, F, block_size, partials)
 
         logger.info("Solving matrix...")
         for i, c in enumerate(congruences):
-            congruences[i]["factors"] = _list_factorization(c["y"], F)
-            congruences[i]["vector"] = _factorization_to_sparse_vector(congruences[i]["factors"], [-1]+F)
-        M = _create_matrix(congruences, [-1]+F)
-        M = _gauss_jordan_gf2(M)
+            congruences[i]["factors"] = _dixon_list_factorization(c["y"]//c["r"], F)
+            congruences[i]["vector"] = _dixon_factorization_to_sparse_vector(congruences[i]["factors"], [-1]+F)
+        M = _dixon_create_matrix(congruences, [-1]+F)
+        M = _dixon_gauss_jordan_gf2(M)
         M = M[~np.all(M == 0, axis=1)]
-        M = _nullspace_basis(M)
+        M = _dixon_nullspace_basis(M)
 
         logger.info("Searching valid factorization...")
-        for solution in _solution_generator(M):
-            g = _factor_from_solution(solution, congruences, n)
+        t = 1
+        for solution in _dixon_solution_generator(M):
+            g = _dixon_factor_from_solution(solution, congruences, n)
             if(g not in [1,n]):
+                logger.info(f"Tested solutions: {t}")
                 return g, n//g
-
+            t += 1
         return n, 1
 
 ############################################################################
@@ -92,6 +119,20 @@ def _kraitchik(n, start, stop):
 ######################### Multiprocessing versions #########################
 ############################################################################
 
+def _multiprocess_fermat_factorization(n, generator, M):
+    if(type(generator) != range):
+        generator = _fermat_congruences_generator(generator, M) # Cannot pickle generator so its created here
+    for a in generator:
+        if(utils.event.is_set()):
+            return n, 1
+        b2 = a*a - n
+        b, check = utils.introot(b2)
+        if(check):
+            utils.event.set()
+            x, y = abs(a+b), abs(a-b)
+            return x, y
+    return n, 1
+
 def _multiprocess_kraitchik(n, start, stop):
     for x in range(start,stop+1):
         if(utils.event.is_set()):
@@ -109,7 +150,113 @@ def _multiprocess_kraitchik(n, start, stop):
 ################################## Support #################################
 ############################################################################
 
-def _list_factorization(n:int, F:List[int]):
+def _fermat_factorization(n, generator):
+    for a in generator:
+        b2 = a*a - n
+        b, check = utils.introot(b2)
+        if(check):
+            x, y = abs(a+b), abs(a-b)
+            return x, y
+    return n, 1
+
+def _fermat_merge_combine_congruences(congruences, a_min, a_max):   
+    congruences = [list(zip(r,len(r)*[m])) for m,r in congruences.items()]
+    M = functools.reduce(lambda x,y:x*y,[m[0][1] for m in congruences])
+    result = []
+    for cong in itertools.product(*congruences):
+        result.append(utils.chinese_remainder(cong, a_min, a_max, M))
+    return result, M
+
+def _fermat_congruences_generator(congruences, M):
+    if(len(congruences) > 0):
+        max_k = max([sp-st+1 for _, st, sp in congruences])
+        for k in range(max_k):
+            for r,s,_ in congruences:
+                yield r + (k+s)*M
+
+def _fermat_build_congruences(n, F, a_min, a_max):
+    if(not utils.are_coprime(F)):
+        raise Exception("F list items must be coprime")
+    congruences = {}
+    for m in F:
+        congruences[m] = []
+        residues = utils.quadratic_residues(m)
+        [congruences[m].extend(residues.get(r, [])) for r in [(r+n)%m for r in residues.keys()]]
+    return _fermat_merge_combine_congruences(congruences, a_min, a_max)
+
+def _dixon_search_smooths(n, F):
+    G = utils.product(F)
+    x, start, stop = gmpy2.isqrt(n), 1, 2*(n-2)
+    congruences, total, j = [], int((len(F)+1)*1.001), 0
+    with tqdm.tqdm(total=total) as pbar:
+        for i in range(start, stop+1):
+            step = pow(-1,i+1)*i
+            x = x + step
+            y = pow(x, 2, n)
+            if(step < 0):
+                y -= n
+            if(utils.is_smooth(abs(y), G)):
+                j, _, _= j+1, congruences.append({"x": x, "y": y, "r": 1}), pbar.update()
+            if(j == total):
+                break
+    return congruences
+
+def _dixon_search_smooth_blocks(n,  F, length, partials):
+    def _build_partial_squares(new_partial_rels, old_partial_rels):
+        squares = []
+        for x_, y_, r_ in new_partial_rels:
+            old_rel = old_partial_rels.get(r_)
+            if(old_rel):
+                squares.append((x_*old_rel["x"], y_*old_rel["y"], r_))
+                old_partial_rels.pop(r_)
+            else:
+                old_partial_rels[r_] = {"x":x_, "y":y_}
+        return old_partial_rels, squares
+
+    G = utils.product(F)
+    middle, start, stop = gmpy2.isqrt(n), 1, n-2
+    congruences, partial_relations, total, j, length = [], {}, int((len(F)+1)*1.001), 0, length//2
+    with tqdm.tqdm(total=total) as pbar:
+        for i in range(start, stop, length):
+            # Forward
+            x_candidates = list(range(middle+i,middle+i+length))
+            y_candidates = [pow(x_i, 2, n) for x_i in x_candidates]
+            relations = utils.are_smooth(y_candidates, G)
+            full_relations = list(filter(lambda x: (x[2] == 1), list(zip(x_candidates, y_candidates, relations))))
+            rel_found = len(full_relations)
+            j,_,_ = j+rel_found, pbar.update(rel_found), congruences.extend(full_relations)
+            if(j >= total):
+                break
+
+            if(partials):
+                partial_relations, partial_squares = _build_partial_squares(list(filter(lambda x: (x[2] != 1) and x[2] < max(F)**2, list(zip(x_candidates, y_candidates, relations)))), partial_relations)
+                partial_squares.extend([(x_,y_,gmpy2.isqrt(r_2)) for x_, y_, r_2 in list(filter(lambda x: (x[2] != 1) and gmpy2.is_square(x[2]), list(zip(x_candidates, y_candidates, relations))))])
+                rel_found = len(full_relations)
+                j,_,_ = j+rel_found, pbar.update(rel_found), congruences.extend(partial_squares)
+                if(j >= total):
+                    break
+
+            # Backward
+            x_candidates = list(range(middle-i-length+1,middle-i+1))
+            y_candidates = [abs(pow(x_i, 2, n)-n) for x_i in x_candidates]
+            relations = utils.are_smooth(y_candidates, G)
+            full_relations = list(filter(lambda x: (x[2] == 1), list(zip(x_candidates, [-y for y in y_candidates], relations))))
+            rel_found = len(full_relations)
+            j,_,_ = j+rel_found, pbar.update(rel_found), congruences.extend(full_relations)
+            if(j >= total):
+                break
+
+            if(partials):
+                partial_relations, partial_squares = _build_partial_squares(list(filter(lambda x: (x[2] != 1) and x[2] < max(F)**2, list(zip(x_candidates, [-y for y in y_candidates], relations)))),partial_relations)
+                partial_squares.extend([(x_,y_,gmpy2.isqrt(r_2)) for x_, y_, r_2 in list(filter(lambda x: (x[2] != 1) and gmpy2.is_square(x[2]), list(zip(x_candidates, [-y for y in y_candidates], relations))))])
+                rel_found = len(full_relations)
+                j,_,_ = j+rel_found, pbar.update(rel_found), congruences.extend(partial_squares)
+                if(j >= total):
+                    break
+
+    return [{"x": x, "y": y, "r": r} for x,y,r in congruences]
+
+def _dixon_list_factorization(n, F):
     f = {}
     if(n < 0):
         f[-1] = 1
@@ -125,14 +272,14 @@ def _list_factorization(n:int, F:List[int]):
             break
     return f
 
-def _factorization_to_sparse_vector(f:Dict[int,int], F:List[int]):
+def _dixon_factorization_to_sparse_vector(f, F):
     vector = []
     for p, e in f.items():
         if(e%2 == 1):
             vector.append(F.index(p))
     return vector
 
-def _create_matrix(congruences, F:List[int]):
+def _dixon_create_matrix(congruences, F):
     M = []
     for c in congruences:
         vector = [np.uint8(0)]*len(F)
@@ -142,7 +289,7 @@ def _create_matrix(congruences, F:List[int]):
     return np.array(M).T
 
 @numba.jit(nopython=True)
-def _gauss_jordan_gf2(M):
+def _dixon_gauss_jordan_gf2(M):
     rows, cols = M.shape
     numpivots = 0
     for j in range(cols):
@@ -169,14 +316,13 @@ def _gauss_jordan_gf2(M):
         for j in range(i):
             M[j] = (M[j] + M[i]*M[j,pivotcol])%2
     return M
-_gauss_jordan_gf2(np.array([[0]])) #Compile numba
+_dixon_gauss_jordan_gf2(np.array([[0]])) #Compile numba
 
-def _nullspace_basis(M):
+def _dixon_nullspace_basis(M):
     rows, cols = M.shape
     ones, basis = [], []
     for i in range(rows):
         ones.append(list(np.argwhere(M[i] == 1).reshape(1,-1)[0]))
-    ones = np.array(ones, dtype="object")
     for i,row in enumerate(ones):
         free_vars = row[1:]
         if(len(free_vars) > 0):
@@ -195,20 +341,41 @@ def _nullspace_basis(M):
         basis.append(vector)
     return np.array(basis)
 
-def _solution_generator(nullspace):
+def _dixon_solution_generator(nullspace):
     length = len(nullspace)
-    for i in range(2**length):
-        solution = np.array([0]*len(nullspace[0]))
-        for i,bit in enumerate(("{:0"+str(length)+"b}").format(i)):
-            if(bit == "1"):
-                solution += nullspace[i]
-        yield solution%2
+    for i in range(1, length+1):
+        for solution in itertools.combinations(nullspace, i):
+            yield sum(solution)%2
 
-def _factor_from_solution(solution, congruences, n):
-    x, y_2 = 1, 1
+def _dixon_factor_from_solution(solution, congruences, n):
+    x, y, r = 1, 1, 1
     for i,bit in enumerate(solution):
         if(bit == 1):
-            x *= congruences[i]["x"]
-            y_2 *= congruences[i]["y"]
-    y = gmpy2.isqrt(y_2)
+            x, y, r = x*congruences[i]["x"], y*congruences[i]["y"], r*congruences[i]["r"]
+    y = r * gmpy2.isqrt(y)
     return gmpy2.gcd(abs(x-y), n)
+
+def sqrt_convergent_generator(n):
+    iroot = gmpy2.isqrt(n)
+
+    # i = 0
+    A_im1, A_i, B_im1, B_i, q_i = 1, 0, iroot, 1, iroot
+    P_i, Q_i = 0, 1
+    yield A_im1%n, A_i, B_i, q_i, P_i, Q_i
+
+    # i = 1
+    i = 1
+    P_i, Q_i, Q_im1 = iroot, n-iroot**2, 1
+    q_i = int(gmpy2.floor((iroot+P_i)/Q_i))
+    A_i, A_im1, B_i, B_im1 = q_i*A_i+A_im1, A_i, q_i*B_i+B_im1, B_i
+    yield A_im1%n, A_i, B_i, q_i, P_i, -1*Q_i
+
+    while(True):
+        # i > 1
+        i += 1
+        P_i_ = q_i*Q_i-P_i
+        Q_i_ = Q_im1+q_i*(P_i-P_i_)
+        P_i, Q_i, Q_im1 = P_i_, Q_i_, Q_i
+        q_i = int(gmpy2.floor((iroot+P_i)/Q_i))
+        A_i, A_im1, B_i, B_im1 = q_i*A_i+A_im1, A_i, q_i*B_i+B_im1, B_i
+        yield A_im1%n, A_i, B_i, q_i, P_i, Q_i*pow(-1, i)
