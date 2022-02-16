@@ -101,6 +101,35 @@ class Squares:
             t += 1
         return n, 1
 
+    @staticmethod
+    def cfrac_factorization(n:int, F:List[int], block_size:int=10000, partials:bool=False):
+        """CFRAC method with list of primes F + -1"""
+
+        logger.info("Searching smooth squares in sqrt convergents...")
+        if(block_size == 1):
+            congruences = _cfrac_search_smooths(n, F)
+        else:
+            congruences = _cfrac_search_smooth_blocks(n, F, block_size, partials)
+
+        logger.info("Solving matrix...")
+        for i, c in enumerate(congruences):
+            congruences[i]["factors"] = _dixon_list_factorization(c["y"]//c["r"], F)
+            congruences[i]["vector"] = _dixon_factorization_to_sparse_vector(congruences[i]["factors"], [-1]+F)
+        M = _dixon_create_matrix(congruences, [-1]+F)
+        M = _dixon_gauss_jordan_gf2(M)
+        M = M[~np.all(M == 0, axis=1)]
+        M = _dixon_nullspace_basis(M)
+
+        logger.info("Searching valid factorization...")
+        t = 1
+        for solution in _dixon_solution_generator(M):
+            g = _dixon_factor_from_solution(solution, congruences, n)
+            if(g not in [1,n]):
+                logger.info(f"Tested solutions: {t}")
+                return g, n//g
+            t += 1
+        return n, 1
+
 ############################################################################
 ########################## Single process versions #########################
 ############################################################################
@@ -355,27 +384,91 @@ def _dixon_factor_from_solution(solution, congruences, n):
     y = r * gmpy2.isqrt(y)
     return gmpy2.gcd(abs(x-y), n)
 
-def sqrt_convergent_generator(n):
-    iroot = gmpy2.isqrt(n)
+def _sqrt_convergent_generator(n:int, k:int=1):
+    iroot = gmpy2.isqrt(n*k)
 
     # i = 0
-    A_im1, A_i, B_im1, B_i, q_i = 1, 0, iroot, 1, iroot
+    A_im1, A_i, B_im1, B_i, q_i = 1, iroot, 0, 1, iroot
     P_i, Q_i = 0, 1
-    yield A_im1%n, A_i, B_i, q_i, P_i, Q_i
+    yield A_im1%n, A_i, B_i, q_i, Q_i, 1
 
     # i = 1
     i = 1
-    P_i, Q_i, Q_im1 = iroot, n-iroot**2, 1
+    P_i, Q_i, Q_im1 = iroot, n*k-iroot**2, 1
     q_i = int(gmpy2.floor((iroot+P_i)/Q_i))
-    A_i, A_im1, B_i, B_im1 = q_i*A_i+A_im1, A_i, q_i*B_i+B_im1, B_i
-    yield A_im1%n, A_i, B_i, q_i, P_i, -1*Q_i
+    A_i, A_im1, B_i, B_im1 = (q_i*A_i+A_im1)%n, A_i, (q_i*B_i+B_im1)%n, B_i
+    yield A_im1, A_i, B_i, q_i, Q_i, -1
 
     while(True):
         # i > 1
         i += 1
         P_i_ = q_i*Q_i-P_i
-        Q_i_ = Q_im1+q_i*(P_i-P_i_)
-        P_i, Q_i, Q_im1 = P_i_, Q_i_, Q_i
+        P_i, Q_i, Q_im1 = P_i_, Q_im1+q_i*(P_i-P_i_), Q_i
         q_i = int(gmpy2.floor((iroot+P_i)/Q_i))
-        A_i, A_im1, B_i, B_im1 = q_i*A_i+A_im1, A_i, q_i*B_i+B_im1, B_i
-        yield A_im1%n, A_i, B_i, q_i, P_i, Q_i*pow(-1, i)
+        A_i, A_im1, B_i, B_im1 = (q_i*A_i+A_im1)%n, A_i, (q_i*B_i+B_im1)%n, B_i
+        yield A_im1, A_i, B_i, q_i, Q_i, pow(-1, i)
+        if(q_i == 2*iroot):
+            break
+
+def _sqrt_convergent_block_generator(n, k, block_size):
+    generator = _sqrt_convergent_generator(n, k)
+    while(True):
+        block = []
+        try:
+            while(len(block) < block_size):
+                block.append(next(generator))
+            yield block
+        except StopIteration:
+            yield block
+            break
+
+def _cfrac_search_smooths(n, F):
+    congruences, total, i, j = [], int((len(F)+1)*1.001), 1, 0
+    with tqdm.tqdm(total=total) as pbar:
+        while(j < total):
+            F_ = [2]+list(filter(lambda p: gmpy2.legendre(n*i,p) == 1, F[1:]))
+            G = utils.product(F_)
+            for value in _sqrt_convergent_generator(n, i):
+                if(utils.is_smooth(value[-2], G)):
+                    j, _, _= j+1, congruences.append({"x": value[0], "y": value[-2]*value[-1], "r": 1}), pbar.update()
+                if(j >= total):
+                    break
+            i += 1
+    return congruences
+
+def _cfrac_search_smooth_blocks(n,  F, length, partials):
+    def _build_partial_squares(new_partial_rels, old_partial_rels):
+        squares = []
+        for x_, y_, r_ in new_partial_rels:
+            old_rel = old_partial_rels.get(r_)
+            if(old_rel):
+                squares.append((x_*old_rel["x"], y_*old_rel["y"], r_))
+                old_partial_rels.pop(r_)
+            else:
+                old_partial_rels[r_] = {"x":x_, "y":y_}
+        return old_partial_rels, squares
+
+
+    congruences, partial_relations, total, i, j = [], {}, int((len(F)+1)*1.001), 1, 0
+    with tqdm.tqdm(total=total) as pbar:
+        while(j < total):
+            F_ = [2]+list(filter(lambda p: gmpy2.legendre(n*i,p) == 1, F[1:]))
+            G = utils.product(F_)
+            for block in _sqrt_convergent_block_generator(n, i, length):
+                relations = utils.are_smooth([y for _,_,_,_,y,_ in block], G)
+                full_relations = [(rel[0][0], rel[0][-2]*rel[0][-1], 1) for rel in list(filter(lambda x: (x[1] == 1), list(zip(block, relations))))]
+                rel_found = len(full_relations)
+                j,_,_ = j+rel_found, pbar.update(rel_found), congruences.extend(full_relations)
+                if(j >= total):
+                    break
+
+                if(partials):
+                    partial_relations, partial_squares = _build_partial_squares([(values[0], values[-2]*values[-1], r) for values, r in list(filter(lambda x: (x[1] != 1) and x[1] < max(F)**2, list(zip(block, relations))))], partial_relations)
+                    partial_squares.extend([(values[0],values[-1]*values[-2],gmpy2.isqrt(r)) for values,r in list(filter(lambda x: (x[1] != 1) and gmpy2.is_square(x[1]), list(zip(block, relations))))])
+                    rel_found = len(full_relations)
+                    j,_,_ = j+rel_found, pbar.update(rel_found), congruences.extend(partial_squares)
+                    if(j >= total):
+                        break
+            i += 1
+
+    return [{"x": x, "y": y, "r": r} for x,y,r in congruences]
