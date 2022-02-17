@@ -105,11 +105,12 @@ class Squares:
     def cfrac_factorization(n:int, F:List[int], block_size:int=10000, partials:bool=False):
         """CFRAC method with list of primes F + -1"""
 
+        F, k = _optimal_factor_base(n, F)
         logger.info("Searching smooth squares in sqrt convergents...")
         if(block_size == 1):
-            congruences = _cfrac_search_smooths(n, F)
+            congruences = _cfrac_search_smooths(n, k, F)
         else:
-            congruences = _cfrac_search_smooth_blocks(n, F, block_size, partials)
+            congruences = _cfrac_search_smooth_blocks(n, k, F, block_size, partials)
 
         logger.info("Solving matrix...")
         for i, c in enumerate(congruences):
@@ -422,21 +423,21 @@ def _sqrt_convergent_block_generator(n, k, block_size):
             yield block
             break
 
-def _cfrac_search_smooths(n, F):
-    congruences, total, i, j = [], int((len(F)+1)*1.001), 1, 0
+def _cfrac_search_smooths(n, k, F):
+    G = utils.product(F)
+    congruences, total, j = [], int((len(F)+1)*1.001), 0
     with tqdm.tqdm(total=total) as pbar:
-        while(j < total):
-            F_ = [2]+list(filter(lambda p: gmpy2.legendre(n*i,p) == 1, F[1:]))
-            G = utils.product(F_)
+        for i in k:
             for value in _sqrt_convergent_generator(n, i):
                 if(utils.is_smooth(value[-2], G)):
                     j, _, _= j+1, congruences.append({"x": value[0], "y": value[-2]*value[-1], "r": 1}), pbar.update()
                 if(j >= total):
                     break
-            i += 1
+            if(j >= total):
+                break
     return congruences
 
-def _cfrac_search_smooth_blocks(n,  F, length, partials):
+def _cfrac_search_smooth_blocks(n, k, F, length, partials):
     def _build_partial_squares(new_partial_rels, old_partial_rels):
         squares = []
         for x_, y_, r_ in new_partial_rels:
@@ -447,13 +448,11 @@ def _cfrac_search_smooth_blocks(n,  F, length, partials):
             else:
                 old_partial_rels[r_] = {"x":x_, "y":y_}
         return old_partial_rels, squares
-
-
-    congruences, partial_relations, total, i, j = [], {}, int((len(F)+1)*1.001), 1, 0
+    
+    G = utils.product(F)
+    congruences, partial_relations, total, j = [], {}, int((len(F)+1)*1.001), 0
     with tqdm.tqdm(total=total) as pbar:
-        while(j < total):
-            F_ = [2]+list(filter(lambda p: gmpy2.legendre(n*i,p) == 1, F[1:]))
-            G = utils.product(F_)
+        for i in k:
             for block in _sqrt_convergent_block_generator(n, i, length):
                 relations = utils.are_smooth([y for _,_,_,_,y,_ in block], G)
                 full_relations = [(rel[0][0], rel[0][-2]*rel[0][-1], 1) for rel in list(filter(lambda x: (x[1] == 1), list(zip(block, relations))))]
@@ -469,6 +468,15 @@ def _cfrac_search_smooth_blocks(n,  F, length, partials):
                     j,_,_ = j+rel_found, pbar.update(rel_found), congruences.extend(partial_squares)
                     if(j >= total):
                         break
-            i += 1
+            if(j >= total):
+                break
 
     return [{"x": x, "y": y, "r": r} for x,y,r in congruences]
+
+def _optimal_factor_base(n, F, limit=10):
+    max_F, max_i = [], 0
+    for i in range(1,limit+1):
+        F_i = list(filter(lambda p: gmpy2.legendre(n*i,p) == 1, F[1:]))
+        if(len(F_i) > len(max_F)):
+            max_F, max_i = F_i, i
+    return [2]+max_F, [max_i]
